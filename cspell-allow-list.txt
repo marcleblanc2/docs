@@ -50,6 +50,7 @@ autoedit
 autoedits
 autoindexing
 autolinker
+autolinks
 automations
 autoscalers
 autoupgrade
