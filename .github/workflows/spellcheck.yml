@@ -4,60 +4,25 @@ name: Spell check
 # plus inline review comments on the flagged lines. Existing spelling errors and
 # errors on unchanged lines are not included. The pull request's title and
 # description are checked too, and reported in the summary comment.
-#
-# The pull request is read from the API on both triggers, since a dispatched
-# run has no pull_request payload. .github/workflows/spellcheck-allow.yml
-# dispatches a run after it pushes to the branch, because a push made with
-# GITHUB_TOKEN does not trigger pull_request. To run it by hand:
-#   gh workflow run spellcheck.yml --ref <branch> -f pr=<number>
 
 on:
     pull_request:
         # `edited` fires when the title or description changes
         types: [opened, synchronize, reopened, edited]
-    workflow_dispatch:
-        inputs:
-            pr:
-                description: Pull request number
-                required: true
 
 permissions:
     contents: read
     pull-requests: write
-
-# A new run for the same pull request supersedes the one in progress
-concurrency:
-    group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr }}
-    cancel-in-progress: true
 
 jobs:
     spellcheck:
         name: CSpell (advisory)
         runs-on: ubuntu-latest
         steps:
-            - name: Look up the pull request
-              id: pr
-              env:
-                  GH_TOKEN: ${{ github.token }}
-                  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
-              run: |
-                  gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" > "$RUNNER_TEMP/pull-request.json"
-                  jq -r --arg repository "$GITHUB_REPOSITORY" '
-                      "number=\(.number)",
-                      "base_sha=\(.base.sha)",
-                      "head_sha=\(.head.sha)",
-                      "head_ref=\(.head.ref)",
-                      "same_repo=\(.head.repo.full_name == $repository)"
-                  ' "$RUNNER_TEMP/pull-request.json" >> "$GITHUB_OUTPUT"
-                  # Title and description are written by jq, never expanded by
-                  # the shell, so a crafted pull request cannot inject commands
-                  jq -r '.title + "\n\n" + (.body // "")' "$RUNNER_TEMP/pull-request.json" \
-                      > "$RUNNER_TEMP/pull-request.md"
-
             - name: Check out pull request head
               uses: actions/checkout@v4
               with:
-                  ref: ${{ steps.pr.outputs.head_sha }}
+                  ref: ${{ github.event.pull_request.head.sha }}
                   fetch-depth: 0
 
             # Node 24 is pre-cached on ubuntu-latest, avoiding the download
@@ -73,10 +38,15 @@ jobs:
 
             - name: Find spelling errors introduced by this PR
               id: check
+              # Title and description come in through env, never inline in the
+              # script, so a crafted pull request cannot inject shell commands
               env:
-                  BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+                  BASE_SHA: ${{ github.event.pull_request.base.sha }}
+                  PR_TITLE: ${{ github.event.pull_request.title }}
+                  PR_BODY: ${{ github.event.pull_request.body }}
               run: |
                   base=$(git merge-base "$BASE_SHA" HEAD)
+                  printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > "$RUNNER_TEMP/pull-request.md"
                   # The script exits 1 both with findings and when it crashes at import
                   # time. It writes its output in one go at the end, so a crash leaves
                   # it empty. A crash does not fail the check, since it says nothing
@@ -93,12 +63,12 @@ jobs:
 
             - name: Report on the pull request
               # Fork PRs get a read-only token; the findings are still in the job log
-              if: steps.pr.outputs.same_repo == 'true'
+              if: github.event.pull_request.head.repo.full_name == github.repository
               env:
                   GH_TOKEN: ${{ github.token }}
-                  PR_NUMBER: ${{ steps.pr.outputs.number }}
-                  HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-                  HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+                  HEAD_REF: ${{ github.event.pull_request.head.ref }}
                   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
                   CRASHED: ${{ steps.check.outputs.crashed }}
               run: |
